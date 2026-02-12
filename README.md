@@ -335,33 +335,6 @@ Start-Process cmd.exe -ArgumentList "/c $uninstaller /S" -Wait
 # Then run the script
 .\install-rustdesk.ps1 -ConfigString "your-config"
 ```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-### How to Contribute
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### Ideas for Contributions
-
-- [ ] Add support for custom ports
-- [ ] Add logging to file option
-- [ ] Create uninstall script
-- [ ] Add support for silent configuration updates
-- [ ] Add email notification option
-- [ ] Create GUI wrapper
-- [ ] Add support for custom installation paths
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## ⚠️ Disclaimer
 
 This script is provided as-is without any warranty. Always test in a non-production environment first. The author is not responsible for any damage or data loss caused by the use of this script.
@@ -370,19 +343,5 @@ This script is provided as-is without any warranty. Always test in a non-product
 
 - [RustDesk](https://rustdesk.com/) - The open-source remote desktop software
 - Original script inspiration from RustDesk community
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/rustdesk-installer/issues)
-- **RustDesk Documentation**: [rustdesk.com/docs](https://rustdesk.com/docs/)
-- **RustDesk Community**: [GitHub Discussions](https://github.com/rustdesk/rustdesk/discussions)
-
----
-
-<div align="center">
-
-Made with ❤️ by [Luis](https://github.com/YOUR_USERNAME)
-
-⭐ Star this repository if you find it helpful!
 
 </div>
