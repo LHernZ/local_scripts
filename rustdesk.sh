@@ -53,7 +53,9 @@ log_error() {
 }
 
 log_debug() {
-    echo -e "\033[0;35m[DEBUG]\033[0m $1"
+    if [[ -n "$DEBUG_MODE" ]]; then
+        echo -e "\033[0;35m[DEBUG]\033[0m $1"
+    fi
 }
 
 # ============================================================================
@@ -181,32 +183,35 @@ mount_dmg() {
     local dmg_path="$1"
     log_info "Mounting DMG file..."
     
-    # First, try mounting with verbose output to debug
-    local mount_output
-    mount_output=$(hdiutil attach "$dmg_path" -nobrowse 2>&1)
+    # Mount the DMG
+    hdiutil attach "$dmg_path" -nobrowse -quiet >/dev/null 2>&1
     
-    log_debug "Mount output: $mount_output"
+    # Give it a moment to mount
+    sleep 2
     
-    # Try multiple methods to extract mount point
+    # Find the mount point by looking at currently mounted volumes
+    # This works regardless of system language
     local mount_point=""
     
-    # Method 1: Look for /Volumes/ in output
-    mount_point=$(echo "$mount_output" | grep "/Volumes/" | tail -1 | sed -E 's|.*/Volumes/|/Volumes/|' | awk '{print $NF}')
+    # Method 1: Check for rustdesk in volume names (case insensitive)
+    for vol in /Volumes/*; do
+        if [[ -d "$vol" ]] && [[ "$(basename "$vol")" =~ [Rr]ust[Dd]esk ]]; then
+            mount_point="$vol"
+            break
+        fi
+    done
     
-    # Method 2: Try a different pattern
+    # Method 2: If not found, get the most recently modified volume
     if [[ -z "$mount_point" ]]; then
-        mount_point=$(echo "$mount_output" | grep -o '/Volumes/[^[:space:]]*' | tail -1)
-    fi
-    
-    # Method 3: List all volumes and find the newest one
-    if [[ -z "$mount_point" ]]; then
-        log_debug "Trying to find mount point by listing volumes..."
-        sleep 1
-        # Get the most recently modified volume
         mount_point=$(ls -td /Volumes/*/ 2>/dev/null | head -1 | sed 's|/$||')
     fi
     
-    if [[ -n "$mount_point" ]]; then
+    # Method 3: Use hdiutil info to get the mount point
+    if [[ -z "$mount_point" ]] || [[ ! -d "$mount_point" ]]; then
+        mount_point=$(hdiutil info | grep -A 5 "$(basename "$dmg_path")" | grep "/Volumes" | head -1 | sed 's/.*\(\/Volumes\/[^[:space:]]*\).*/\1/')
+    fi
+    
+    if [[ -n "$mount_point" ]] && [[ -d "$mount_point" ]]; then
         log_debug "Found mount point: $mount_point"
         echo "$mount_point"
         return 0
@@ -220,7 +225,7 @@ unmount_dmg() {
     local mount_point="$1"
     if [[ -n "$mount_point" ]] && [[ -d "$mount_point" ]]; then
         log_info "Unmounting DMG..."
-        hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+        hdiutil detach "$mount_point" -quiet 2>/dev/null || hdiutil detach "$mount_point" -force 2>/dev/null || true
         sleep 1
     fi
 }
@@ -229,10 +234,13 @@ find_app_in_mount() {
     local mount_point="$1"
     
     log_debug "Searching for RustDesk.app in: $mount_point"
-    log_debug "Contents of mount point:"
-    ls -la "$mount_point" 2>/dev/null | while read line; do
-        log_debug "  $line"
-    done
+    
+    if [[ -n "$DEBUG_MODE" ]]; then
+        log_debug "Contents of mount point:"
+        ls -la "$mount_point" 2>/dev/null | while read line; do
+            log_debug "  $line"
+        done
+    fi
     
     # Try different possible locations
     local app_path=""
@@ -240,15 +248,18 @@ find_app_in_mount() {
     # Direct in mount point
     if [[ -d "$mount_point/RustDesk.app" ]]; then
         app_path="$mount_point/RustDesk.app"
-    # Inside a subdirectory
-    elif [[ -d "$mount_point"/*.app ]]; then
+    # Case insensitive search for rustdesk.app
+    elif [[ -d "$mount_point"/[Rr]ust[Dd]esk.app ]]; then
+        app_path=$(ls -d "$mount_point"/[Rr]ust[Dd]esk.app 2>/dev/null | head -1)
+    # Any .app file
+    elif ls -d "$mount_point"/*.app 2>/dev/null | grep -q .; then
         app_path=$(ls -d "$mount_point"/*.app 2>/dev/null | head -1)
     # Search recursively (up to 2 levels)
     else
-        app_path=$(find "$mount_point" -maxdepth 2 -name "*.app" -type d 2>/dev/null | grep -i rustdesk | head -1)
+        app_path=$(find "$mount_point" -maxdepth 2 -name "*.app" -type d 2>/dev/null | head -1)
     fi
     
-    if [[ -n "$app_path" ]]; then
+    if [[ -n "$app_path" ]] && [[ -d "$app_path" ]]; then
         log_debug "Found app at: $app_path"
         echo "$app_path"
         return 0
@@ -263,8 +274,8 @@ install_rustdesk_from_dmg() {
     local mount_point
     mount_point=$(mount_dmg "$dmg_path")
     
-    if [[ -z "$mount_point" ]]; then
-        log_error "Failed to mount DMG"
+    if [[ -z "$mount_point" ]] || [[ ! -d "$mount_point" ]]; then
+        log_error "Failed to mount DMG or invalid mount point"
         return 1
     fi
     
@@ -274,7 +285,7 @@ install_rustdesk_from_dmg() {
     local app_path
     app_path=$(find_app_in_mount "$mount_point")
     
-    if [[ -z "$app_path" ]]; then
+    if [[ -z "$app_path" ]] || [[ ! -d "$app_path" ]]; then
         log_error "RustDesk.app not found in DMG"
         log_error "Mount point contents:"
         ls -la "$mount_point" 2>/dev/null || log_error "Could not list mount point"
@@ -282,7 +293,7 @@ install_rustdesk_from_dmg() {
         return 1
     fi
     
-    log_info "Found RustDesk.app at: $app_path"
+    log_info "Found app at: $app_path"
     log_info "Copying RustDesk.app to Applications..."
     
     # Remove existing installation
@@ -291,29 +302,35 @@ install_rustdesk_from_dmg() {
         rm -rf "/Applications/RustDesk.app"
     fi
     
-    # Copy the app
-    if cp -R "$app_path" /Applications/; then
+    # Copy the app using ditto for better reliability
+    if ditto "$app_path" "/Applications/RustDesk.app" 2>/dev/null; then
         log_success "RustDesk copied to Applications"
     else
-        log_error "Failed to copy RustDesk.app"
-        unmount_dmg "$mount_point"
-        return 1
+        # Fallback to cp
+        if cp -R "$app_path" /Applications/ 2>/dev/null; then
+            log_success "RustDesk copied to Applications"
+        else
+            log_error "Failed to copy RustDesk.app"
+            unmount_dmg "$mount_point"
+            return 1
+        fi
     fi
     
     unmount_dmg "$mount_point"
     
     # Fix permissions and remove quarantine
     log_info "Fixing permissions and removing quarantine attributes..."
-    chmod -R 755 /Applications/RustDesk.app
+    chmod -R 755 /Applications/RustDesk.app 2>/dev/null || true
     xattr -cr /Applications/RustDesk.app 2>/dev/null || true
     
     # Verify the binary exists
     if [[ ! -f "/Applications/RustDesk.app/Contents/MacOS/RustDesk" ]]; then
         log_error "RustDesk binary not found after installation"
+        ls -la "/Applications/RustDesk.app/Contents/MacOS/" 2>/dev/null || true
         return 1
     fi
     
-    log_success "Permissions and quarantine attributes fixed"
+    log_success "Installation files verified"
     
     return 0
 }
@@ -404,7 +421,7 @@ parse_arguments() {
                 shift 2
                 ;;
             --debug)
-                set -x
+                DEBUG_MODE=1
                 shift
                 ;;
             --help|-h)
@@ -556,7 +573,7 @@ main() {
     fi
     
     log_success "Download completed"
-    log_debug "DMG file size: $(du -h "$dmg_file" | awk '{print $1}')"
+    log_debug "DMG file size: $(du -h "$dmg_file" 2>/dev/null | awk '{print $1}')"
     
     # Stop any running processes
     stop_rustdesk_processes
