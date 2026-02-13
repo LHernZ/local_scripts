@@ -19,7 +19,7 @@
 .EXAMPLE
     # Run with custom config
     $config = "your-config-string-here"
-    iex "& { $(irm https://raw.githubusercontent.com/yourusername/yourrepo/main/install-rustdesk.ps1) } -ConfigString '$config'"
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/yourusername/yourrepo/main/install-rustdesk.ps1))) -ConfigString $config
 
 .NOTES
     Author: Luis
@@ -51,7 +51,7 @@ if ([string]::IsNullOrEmpty($ConfigString)) {
 $TempDir = "C:\Temp"
 
 # Installation timeout settings (in seconds)
-$InstallTimeout = 30
+$InstallTimeout = 60
 $ServiceTimeout = 30
 
 #endregion
@@ -182,9 +182,60 @@ function New-RandomPassword {
         [int]$Length = 12
     )
     
-    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'
+    $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
     $password = -join ((1..$Length) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
     return $password
+}
+
+function Wait-ForRustDeskInstallation {
+    param(
+        [int]$TimeoutSeconds = 60
+    )
+    
+    Write-ColorOutput "Waiting for RustDesk installation to complete..." -Type Info
+    
+    $elapsed = 0
+    $checkInterval = 2
+    
+    while ($elapsed -lt $TimeoutSeconds) {
+        # Check if RustDesk is installed in registry
+        $installed = Test-RustDeskInstalled
+        
+        # Check if rustdesk.exe exists
+        $exePath = Join-Path $env:ProgramFiles "RustDesk\rustdesk.exe"
+        $exeExists = Test-Path $exePath
+        
+        if ($installed.Installed -and $exeExists) {
+            Write-ColorOutput "RustDesk installation detected" -Type Success
+            return $true
+        }
+        
+        Start-Sleep -Seconds $checkInterval
+        $elapsed += $checkInterval
+        
+        # Show progress
+        if ($elapsed % 10 -eq 0) {
+            Write-ColorOutput "Still waiting... ($elapsed seconds elapsed)" -Type Info
+        }
+    }
+    
+    return $false
+}
+
+function Stop-RustDeskProcesses {
+    Write-ColorOutput "Stopping any running RustDesk processes..." -Type Info
+    
+    Get-Process | Where-Object { $_.Name -like "rustdesk*" } | ForEach-Object {
+        try {
+            $_.Kill()
+            Write-ColorOutput "Stopped process: $($_.Name) (PID: $($_.Id))" -Type Info
+        }
+        catch {
+            Write-ColorOutput "Could not stop process: $($_.Name)" -Type Warning
+        }
+    }
+    
+    Start-Sleep -Seconds 2
 }
 
 #endregion
@@ -235,13 +286,18 @@ try {
         if ($currentInstall.Version -eq $latestVersion.Version) {
             Write-ColorOutput "RustDesk is already up to date!" -Type Success
             
+            # Stop any running processes
+            Stop-RustDeskProcesses
+            
             # Still configure it with the provided settings
             Write-ColorOutput "Applying configuration..." -Type Info
             $rustdeskPath = Join-Path $env:ProgramFiles "RustDesk\rustdesk.exe"
             
             if (Test-Path $rustdeskPath) {
                 & $rustdeskPath --config $ConfigString
+                Start-Sleep -Seconds 2
                 & $rustdeskPath --password $Password
+                Start-Sleep -Seconds 2
                 $rustdeskId = & $rustdeskPath --get-id
                 
                 Write-Host ""
@@ -278,16 +334,49 @@ try {
     Invoke-WebRequest -Uri $latestVersion.DownloadUrl -OutFile $installerPath -UseBasicParsing
     Write-ColorOutput "Download completed" -Type Success
     
-    # Install RustDesk
-    Write-ColorOutput "Installing RustDesk (this may take a moment)..." -Type Info
-    Start-Process -FilePath $installerPath -ArgumentList "--silent-install" -Wait -NoNewWindow
-    Start-Sleep -Seconds 5
+    # Stop any running RustDesk processes before installation
+    Stop-RustDeskProcesses
     
-    Write-ColorOutput "Installation completed" -Type Success
+    # Install RustDesk using Start-Process without -Wait to avoid hanging
+    Write-ColorOutput "Installing RustDesk (this may take a moment)..." -Type Info
+    
+    $installProcess = Start-Process -FilePath $installerPath -ArgumentList "--silent-install" -PassThru -NoNewWindow
+    
+    # Wait for installation to complete with timeout
+    $installComplete = Wait-ForRustDeskInstallation -TimeoutSeconds $InstallTimeout
+    
+    if (-not $installComplete) {
+        Write-ColorOutput "Installation timeout - but checking if it succeeded anyway..." -Type Warning
+    }
+    
+    # Kill the installer process if it's still running
+    if (-not $installProcess.HasExited) {
+        try {
+            $installProcess.Kill()
+            Write-ColorOutput "Terminated installer process" -Type Info
+        }
+        catch {
+            Write-ColorOutput "Could not terminate installer process" -Type Warning
+        }
+    }
+    
+    Start-Sleep -Seconds 3
+    
+    # Verify installation
+    $finalCheck = Test-RustDeskInstalled
+    if (-not $finalCheck.Installed) {
+        throw "RustDesk installation failed - not found in registry"
+    }
+    
+    Write-ColorOutput "Installation completed successfully" -Type Success
     
     # Verify and start service
     $serviceName = 'RustDesk'
     $rustdeskPath = Join-Path $env:ProgramFiles "RustDesk\rustdesk.exe"
+    
+    if (-not (Test-Path $rustdeskPath)) {
+        throw "RustDesk executable not found at: $rustdeskPath"
+    }
     
     Write-ColorOutput "Configuring RustDesk service..." -Type Info
     
@@ -301,37 +390,53 @@ try {
     }
     
     if ($null -eq $service) {
-        throw "RustDesk service not found after installation"
-    }
-    
-    # Start service if not running
-    $timeout = 0
-    while ($service.Status -ne 'Running' -and $timeout -lt $ServiceTimeout) {
-        Write-ColorOutput "Starting RustDesk service..." -Type Info
-        Start-Service -Name $serviceName -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
-        $service.Refresh()
-        $timeout += 2
-    }
-    
-    if ($service.Status -ne 'Running') {
-        Write-ColorOutput "Warning: Service did not start within timeout period" -Type Warning
+        Write-ColorOutput "Warning: RustDesk service not found, but continuing with configuration..." -Type Warning
     }
     else {
-        Write-ColorOutput "RustDesk service is running" -Type Success
+        # Start service if not running
+        $timeout = 0
+        while ($service.Status -ne 'Running' -and $timeout -lt $ServiceTimeout) {
+            Write-ColorOutput "Starting RustDesk service..." -Type Info
+            Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            $service.Refresh()
+            $timeout += 2
+        }
+        
+        if ($service.Status -ne 'Running') {
+            Write-ColorOutput "Warning: Service did not start within timeout period" -Type Warning
+        }
+        else {
+            Write-ColorOutput "RustDesk service is running" -Type Success
+        }
     }
+    
+    # Give the service a moment to fully initialize
+    Start-Sleep -Seconds 3
     
     # Configure RustDesk
     Write-ColorOutput "Applying configuration and password..." -Type Info
     
-    & $rustdeskPath --config $ConfigString
-    Start-Sleep -Seconds 2
-    
-    & $rustdeskPath --password $Password
-    Start-Sleep -Seconds 2
-    
-    # Get RustDesk ID
-    $rustdeskId = & $rustdeskPath --get-id
+    try {
+        & $rustdeskPath --config $ConfigString 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        
+        & $rustdeskPath --password $Password 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+        
+        # Get RustDesk ID
+        $rustdeskId = & $rustdeskPath --get-id 2>&1
+        
+        if ([string]::IsNullOrEmpty($rustdeskId)) {
+            Write-ColorOutput "Warning: Could not retrieve RustDesk ID immediately" -Type Warning
+            Start-Sleep -Seconds 3
+            $rustdeskId = & $rustdeskPath --get-id 2>&1
+        }
+    }
+    catch {
+        Write-ColorOutput "Warning during configuration: $($_.Exception.Message)" -Type Warning
+        $rustdeskId = "Could not retrieve - check RustDesk interface"
+    }
     
     # Clean up
     if (Test-Path $installerPath) {
