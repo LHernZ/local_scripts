@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/zsh
 
 #
 # RustDesk Silent Installation Script for macOS
@@ -8,16 +8,17 @@
 #   Designed to be run directly from GitHub for easy deployment.
 #
 # Usage:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh)
+#   zsh <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh)
 #
 # With custom config:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh | bash -s -- --config "your-config-string"
+#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh | zsh -s -- --config "your-config-string"
 #
 # Author: Luis
 # Requires: macOS 10.13+ and sudo privileges
 #
 
-set -e
+setopt ERR_EXIT
+setopt PIPE_FAIL
 
 # ============================================================================
 # CONFIGURATION SECTION
@@ -45,19 +46,19 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 log_info() {
-    echo -e "${CYAN}[INFO]${NC} $1"
+    print -P "%F{cyan}[INFO]%f $1"
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    print -P "%F{green}[SUCCESS]%f $1"
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    print -P "%F{yellow}[WARNING]%f $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    print -P "%F{red}[ERROR]%f $1"
 }
 
 # ============================================================================
@@ -65,12 +66,12 @@ log_error() {
 # ============================================================================
 
 check_root() {
-    if [ "$EUID" -ne 0 ]; then
+    if [[ $EUID -ne 0 ]]; then
         log_warning "This script requires sudo privileges"
         log_info "Requesting sudo access..."
         
-        # Re-run script with sudo
-        exec sudo bash "$0" "$@"
+        # Re-run script with sudo, preserving arguments
+        exec sudo zsh "$0" "$@"
     fi
 }
 
@@ -82,18 +83,35 @@ generate_random_password() {
 get_latest_rustdesk_version() {
     log_info "Fetching latest RustDesk version information..."
     
+    # Detect architecture
+    local arch=$(uname -m)
+    local arch_filter=""
+    
+    if [[ "$arch" == "arm64" ]] || [[ "$arch" == "aarch64" ]]; then
+        arch_filter="aarch64"
+        log_info "Detected Apple Silicon (ARM64)"
+    else
+        arch_filter="x86_64"
+        log_info "Detected Intel (x86_64)"
+    fi
+    
     # Try GitHub API first
     local api_response
     api_response=$(curl -fsSL "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" 2>/dev/null || echo "")
     
-    if [ -n "$api_response" ]; then
+    if [[ -n "$api_response" ]]; then
         local version
         local download_url
         
         version=$(echo "$api_response" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        download_url=$(echo "$api_response" | grep '"browser_download_url":.*\.dmg"' | grep -v 'arm64' | grep -v 'aarch64' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
         
-        if [ -n "$version" ] && [ -n "$download_url" ]; then
+        if [[ "$arch_filter" == "aarch64" ]]; then
+            download_url=$(echo "$api_response" | grep '"browser_download_url":.*\.dmg"' | grep -E 'aarch64|arm64' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+        else
+            download_url=$(echo "$api_response" | grep '"browser_download_url":.*\.dmg"' | grep -v 'aarch64' | grep -v 'arm64' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+        fi
+        
+        if [[ -n "$version" ]] && [[ -n "$download_url" ]]; then
             echo "$version|$download_url"
             return 0
         fi
@@ -105,9 +123,14 @@ get_latest_rustdesk_version() {
     local page_content
     page_content=$(curl -fsSL "https://github.com/rustdesk/rustdesk/releases/latest" 2>/dev/null || echo "")
     
-    if [ -n "$page_content" ]; then
+    if [[ -n "$page_content" ]]; then
         local download_url
-        download_url=$(echo "$page_content" | grep -o 'href="[^"]*rustdesk-[^"]*\.dmg"' | grep -v 'arm64\|aarch64' | head -1 | sed 's/href="//;s/"$//')
+        
+        if [[ "$arch_filter" == "aarch64" ]]; then
+            download_url=$(echo "$page_content" | grep -o 'href="[^"]*rustdesk-[^"]*\.dmg"' | grep -E 'aarch64|arm64' | head -1 | sed 's/href="//;s/"$//')
+        else
+            download_url=$(echo "$page_content" | grep -o 'href="[^"]*rustdesk-[^"]*\.dmg"' | grep -v 'arm64\|aarch64' | head -1 | sed 's/href="//;s/"$//')
+        fi
         
         if [[ "$download_url" == //* ]]; then
             download_url="https://github.com${download_url}"
@@ -116,7 +139,7 @@ get_latest_rustdesk_version() {
         local version
         version=$(echo "$download_url" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
         
-        if [ -n "$version" ] && [ -n "$download_url" ]; then
+        if [[ -n "$version" ]] && [[ -n "$download_url" ]]; then
             echo "$version|$download_url"
             return 0
         fi
@@ -127,9 +150,9 @@ get_latest_rustdesk_version() {
 }
 
 check_rustdesk_installed() {
-    if [ -d "/Applications/RustDesk.app" ]; then
+    if [[ -d "/Applications/RustDesk.app" ]]; then
         local version=""
-        if [ -f "/Applications/RustDesk.app/Contents/Info.plist" ]; then
+        if [[ -f "/Applications/RustDesk.app/Contents/Info.plist" ]]; then
             version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "/Applications/RustDesk.app/Contents/Info.plist" 2>/dev/null || echo "unknown")
         fi
         echo "installed|$version"
@@ -152,16 +175,16 @@ wait_for_rustdesk_installation() {
     local elapsed=0
     local check_interval=2
     
-    while [ $elapsed -lt $timeout ]; do
-        if [ -d "/Applications/RustDesk.app" ] && [ -f "/Applications/RustDesk.app/Contents/MacOS/RustDesk" ]; then
+    while (( elapsed < timeout )); do
+        if [[ -d "/Applications/RustDesk.app" ]] && [[ -f "/Applications/RustDesk.app/Contents/MacOS/RustDesk" ]]; then
             log_success "RustDesk installation detected"
             return 0
         fi
         
         sleep $check_interval
-        elapsed=$((elapsed + check_interval))
+        (( elapsed += check_interval ))
         
-        if [ $((elapsed % 10)) -eq 0 ]; then
+        if (( elapsed % 10 == 0 )); then
             log_info "Still waiting... ($elapsed seconds elapsed)"
         fi
     done
@@ -179,12 +202,12 @@ mount_dmg() {
     local mount_point
     mount_point=$(echo "$mount_output" | grep "/Volumes" | tail -1 | awk '{print $3}')
     
-    if [ -z "$mount_point" ]; then
+    if [[ -z "$mount_point" ]]; then
         # Try alternative method
         mount_point=$(hdiutil attach "$dmg_path" -nobrowse 2>/dev/null | grep "/Volumes" | tail -1 | sed 's/.*\(\/Volumes\/.*\)/\1/')
     fi
     
-    if [ -n "$mount_point" ]; then
+    if [[ -n "$mount_point" ]]; then
         echo "$mount_point"
         return 0
     fi
@@ -194,7 +217,7 @@ mount_dmg() {
 
 unmount_dmg() {
     local mount_point="$1"
-    if [ -n "$mount_point" ] && [ -d "$mount_point" ]; then
+    if [[ -n "$mount_point" ]] && [[ -d "$mount_point" ]]; then
         log_info "Unmounting DMG..."
         hdiutil detach "$mount_point" -quiet 2>/dev/null || true
     fi
@@ -206,7 +229,7 @@ install_rustdesk_from_dmg() {
     local mount_point
     mount_point=$(mount_dmg "$dmg_path")
     
-    if [ -z "$mount_point" ]; then
+    if [[ -z "$mount_point" ]]; then
         log_error "Failed to mount DMG"
         return 1
     fi
@@ -214,12 +237,12 @@ install_rustdesk_from_dmg() {
     log_info "Copying RustDesk.app to Applications..."
     
     # Remove existing installation
-    if [ -d "/Applications/RustDesk.app" ]; then
+    if [[ -d "/Applications/RustDesk.app" ]]; then
         rm -rf "/Applications/RustDesk.app"
     fi
     
     # Copy the app
-    if [ -d "$mount_point/RustDesk.app" ]; then
+    if [[ -d "$mount_point/RustDesk.app" ]]; then
         cp -R "$mount_point/RustDesk.app" /Applications/
         log_success "RustDesk copied to Applications"
     else
@@ -230,9 +253,11 @@ install_rustdesk_from_dmg() {
     
     unmount_dmg "$mount_point"
     
-    # Fix permissions
+    # Fix permissions and remove quarantine
     chmod -R 755 /Applications/RustDesk.app
     xattr -cr /Applications/RustDesk.app 2>/dev/null || true
+    
+    log_success "Permissions and quarantine attributes fixed"
     
     return 0
 }
@@ -243,7 +268,7 @@ configure_rustdesk() {
     
     local rustdesk_bin="/Applications/RustDesk.app/Contents/MacOS/RustDesk"
     
-    if [ ! -f "$rustdesk_bin" ]; then
+    if [[ ! -f "$rustdesk_bin" ]]; then
         log_error "RustDesk binary not found"
         return 1
     fi
@@ -262,7 +287,7 @@ configure_rustdesk() {
     local rustdesk_id
     rustdesk_id=$("$rustdesk_bin" --get-id 2>/dev/null | head -1 || echo "")
     
-    if [ -z "$rustdesk_id" ]; then
+    if [[ -z "$rustdesk_id" ]]; then
         log_warning "Could not retrieve RustDesk ID immediately, retrying..."
         sleep 3
         rustdesk_id=$("$rustdesk_bin" --get-id 2>/dev/null | head -1 || echo "Check RustDesk app")
@@ -276,7 +301,7 @@ setup_launch_agent() {
     
     local plist_path="/Library/LaunchAgents/com.carriez.rustdesk_service.plist"
     
-    cat > "$plist_path" <<EOF
+    cat > "$plist_path" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -298,6 +323,9 @@ EOF
 
     chmod 644 "$plist_path"
     
+    # Unload if already loaded
+    launchctl unload "$plist_path" 2>/dev/null || true
+    
     # Load the launch agent
     launchctl load "$plist_path" 2>/dev/null || true
     
@@ -309,7 +337,7 @@ EOF
 # ============================================================================
 
 parse_arguments() {
-    while [[ $# -gt 0 ]]; do
+    while (( $# > 0 )); do
         case $1 in
             --config)
                 CONFIG_STRING="$2"
@@ -333,11 +361,11 @@ parse_arguments() {
 }
 
 show_help() {
-    cat <<EOF
+    cat <<'EOF'
 RustDesk Installation Script for macOS
 
 Usage:
-    $0 [OPTIONS]
+    zsh install-rustdesk-mac.sh [OPTIONS]
 
 Options:
     --config CONFIG_STRING    Your RustDesk server configuration string
@@ -346,13 +374,16 @@ Options:
 
 Examples:
     # Run with config string
-    sudo $0 --config "config=server.com:21116,base64string"
+    sudo zsh install-rustdesk-mac.sh --config "config=server.com:21116,base64string"
     
     # Run with config and custom password
-    sudo $0 --config "config=server.com:21116,base64string" --password "MyPassword123"
+    sudo zsh install-rustdesk-mac.sh --config "config=server.com:21116,base64string" --password "MyPassword123"
     
     # Run directly from GitHub
-    bash <(curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh)
+    zsh <(curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh)
+    
+    # Run from GitHub with parameters
+    curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh | zsh -s -- --config "your-config"
 
 EOF
 }
@@ -362,11 +393,11 @@ EOF
 # ============================================================================
 
 main() {
-    echo ""
-    echo "========================================"
-    echo "  RustDesk Installation Script (macOS)"
-    echo "========================================"
-    echo ""
+    print ""
+    print "========================================"
+    print "  RustDesk Installation Script (macOS)"
+    print "========================================"
+    print ""
     
     # Parse command line arguments
     parse_arguments "$@"
@@ -375,16 +406,16 @@ main() {
     check_root "$@"
     
     # Validate configuration string
-    if [ -z "$CONFIG_STRING" ] || [ "$CONFIG_STRING" = "PASTE_YOUR_CONFIG_STRING_HERE" ]; then
+    if [[ -z "$CONFIG_STRING" ]] || [[ "$CONFIG_STRING" == "PASTE_YOUR_CONFIG_STRING_HERE" ]]; then
         log_error "Configuration string not set!"
         log_error "Please pass --config parameter or edit the script"
-        echo ""
+        print ""
         show_help
         exit 1
     fi
     
     # Generate or use provided password
-    if [ -z "$CUSTOM_PASSWORD" ]; then
+    if [[ -z "$CUSTOM_PASSWORD" ]]; then
         RUSTDESK_PASSWORD=$(generate_random_password 12)
         log_info "Generated random password"
     else
@@ -393,50 +424,53 @@ main() {
     fi
     
     # Get latest version info
-    VERSION_INFO=$(get_latest_rustdesk_version)
-    if [ $? -ne 0 ]; then
+    local version_info
+    version_info=$(get_latest_rustdesk_version)
+    if [[ $? -ne 0 ]]; then
         log_error "Failed to fetch RustDesk version information"
         exit 1
     fi
     
-    LATEST_VERSION=$(echo "$VERSION_INFO" | cut -d'|' -f1)
-    DOWNLOAD_URL=$(echo "$VERSION_INFO" | cut -d'|' -f2)
+    local latest_version=${version_info%%|*}
+    local download_url=${version_info##*|}
     
-    log_info "Latest version: $LATEST_VERSION"
-    log_info "Download URL: $DOWNLOAD_URL"
+    log_info "Latest version: $latest_version"
+    log_info "Download URL: $download_url"
     
     # Check current installation
-    INSTALL_INFO=$(check_rustdesk_installed)
-    INSTALL_STATUS=$(echo "$INSTALL_INFO" | cut -d'|' -f1)
-    CURRENT_VERSION=$(echo "$INSTALL_INFO" | cut -d'|' -f2)
+    local install_info
+    install_info=$(check_rustdesk_installed)
+    local install_status=${install_info%%|*}
+    local current_version=${install_info##*|}
     
-    if [ "$INSTALL_STATUS" = "installed" ]; then
-        log_info "Current version: $CURRENT_VERSION"
+    if [[ "$install_status" == "installed" ]]; then
+        log_info "Current version: $current_version"
         
-        if [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+        if [[ "$current_version" == "$latest_version" ]]; then
             log_success "RustDesk is already up to date!"
             
             # Stop processes and reconfigure
             stop_rustdesk_processes
             
             log_info "Applying configuration..."
-            RUSTDESK_ID=$(configure_rustdesk "$CONFIG_STRING" "$RUSTDESK_PASSWORD")
+            local rustdesk_id
+            rustdesk_id=$(configure_rustdesk "$CONFIG_STRING" "$RUSTDESK_PASSWORD")
             
-            echo ""
-            echo "========================================"
-            echo "  Configuration Updated"
-            echo "========================================"
-            echo "RustDesk ID: $RUSTDESK_ID"
-            echo "Password: $RUSTDESK_PASSWORD"
-            echo "========================================"
-            echo ""
+            print ""
+            print "========================================"
+            print "  Configuration Updated"
+            print "========================================"
+            print "RustDesk ID: $rustdesk_id"
+            print "Password: $RUSTDESK_PASSWORD"
+            print "========================================"
+            print ""
             
             exit 0
         else
-            log_info "Updating to version $LATEST_VERSION..."
+            log_info "Updating to version $latest_version..."
         fi
     else
-        log_info "RustDesk not installed. Installing version $LATEST_VERSION..."
+        log_info "RustDesk not installed. Installing version $latest_version..."
     fi
     
     # Create temp directory
@@ -444,10 +478,10 @@ main() {
     cd "$TEMP_DIR"
     
     # Download installer
-    DMG_FILE="$TEMP_DIR/rustdesk.dmg"
+    local dmg_file="$TEMP_DIR/rustdesk.dmg"
     log_info "Downloading RustDesk installer..."
     
-    if ! curl -fL "$DOWNLOAD_URL" -o "$DMG_FILE"; then
+    if ! curl -fL "$download_url" -o "$dmg_file"; then
         log_error "Failed to download RustDesk"
         rm -rf "$TEMP_DIR"
         exit 1
@@ -461,7 +495,7 @@ main() {
     # Install RustDesk
     log_info "Installing RustDesk..."
     
-    if ! install_rustdesk_from_dmg "$DMG_FILE"; then
+    if ! install_rustdesk_from_dmg "$dmg_file"; then
         log_error "Installation failed"
         rm -rf "$TEMP_DIR"
         exit 1
@@ -469,7 +503,7 @@ main() {
     
     # Verify installation
     sleep 2
-    if [ ! -d "/Applications/RustDesk.app" ]; then
+    if [[ ! -d "/Applications/RustDesk.app" ]]; then
         log_error "RustDesk installation verification failed"
         rm -rf "$TEMP_DIR"
         exit 1
@@ -484,27 +518,28 @@ main() {
     sleep 3
     
     # Configure RustDesk
-    RUSTDESK_ID=$(configure_rustdesk "$CONFIG_STRING" "$RUSTDESK_PASSWORD")
+    local rustdesk_id
+    rustdesk_id=$(configure_rustdesk "$CONFIG_STRING" "$RUSTDESK_PASSWORD")
     
     # Clean up
     log_info "Cleaning up temporary files..."
     rm -rf "$TEMP_DIR"
     
     # Display results
-    echo ""
-    echo "========================================"
-    echo "  Installation Completed Successfully"
-    echo "========================================"
-    echo "RustDesk ID: $RUSTDESK_ID"
-    echo "Password: $RUSTDESK_PASSWORD"
-    echo "Version: $LATEST_VERSION"
-    echo "========================================"
-    echo ""
+    print ""
+    print "========================================"
+    print "  Installation Completed Successfully"
+    print "========================================"
+    print "RustDesk ID: $rustdesk_id"
+    print "Password: $RUSTDESK_PASSWORD"
+    print "Version: $latest_version"
+    print "========================================"
+    print ""
     log_warning "Save these credentials in a secure location!"
-    echo ""
+    print ""
     log_info "RustDesk has been installed and configured"
     log_info "The service will start automatically on login"
-    echo ""
+    print ""
 }
 
 # Run main function
