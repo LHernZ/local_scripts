@@ -17,9 +17,6 @@
 # Requires: macOS 10.13+ and sudo privileges
 #
 
-setopt ERR_EXIT
-setopt PIPE_FAIL
-
 # ============================================================================
 # CONFIGURATION SECTION
 # ============================================================================
@@ -39,41 +36,25 @@ SERVICE_TIMEOUT=30
 # COLOR OUTPUT FUNCTIONS
 # ============================================================================
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
 log_info() {
-    print -P "%F{cyan}[INFO]%f $1"
+    echo -e "\033[0;36m[INFO]\033[0m $1"
 }
 
 log_success() {
-    print -P "%F{green}[SUCCESS]%f $1"
+    echo -e "\033[0;32m[SUCCESS]\033[0m $1"
 }
 
 log_warning() {
-    print -P "%F{yellow}[WARNING]%f $1"
+    echo -e "\033[1;33m[WARNING]\033[0m $1"
 }
 
 log_error() {
-    print -P "%F{red}[ERROR]%f $1"
+    echo -e "\033[0;31m[ERROR]\033[0m $1"
 }
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_warning "This script requires sudo privileges"
-        log_info "Requesting sudo access..."
-        
-        # Re-run script with sudo, preserving arguments
-        exec sudo zsh "$0" "$@"
-    fi
-}
 
 generate_random_password() {
     local length=${1:-12}
@@ -175,16 +156,16 @@ wait_for_rustdesk_installation() {
     local elapsed=0
     local check_interval=2
     
-    while (( elapsed < timeout )); do
+    while [[ $elapsed -lt $timeout ]]; do
         if [[ -d "/Applications/RustDesk.app" ]] && [[ -f "/Applications/RustDesk.app/Contents/MacOS/RustDesk" ]]; then
             log_success "RustDesk installation detected"
             return 0
         fi
         
         sleep $check_interval
-        (( elapsed += check_interval ))
+        elapsed=$((elapsed + check_interval))
         
-        if (( elapsed % 10 == 0 )); then
+        if [[ $((elapsed % 10)) -eq 0 ]]; then
             log_info "Still waiting... ($elapsed seconds elapsed)"
         fi
     done
@@ -337,7 +318,7 @@ EOF
 # ============================================================================
 
 parse_arguments() {
-    while (( $# > 0 )); do
+    while [[ $# -gt 0 ]]; do
         case $1 in
             --config)
                 CONFIG_STRING="$2"
@@ -383,7 +364,7 @@ Examples:
     zsh <(curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh)
     
     # Run from GitHub with parameters
-    curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh | zsh -s -- --config "your-config"
+    curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh | sudo zsh -s -- --config "your-config"
 
 EOF
 }
@@ -393,23 +374,30 @@ EOF
 # ============================================================================
 
 main() {
-    print ""
-    print "========================================"
-    print "  RustDesk Installation Script (macOS)"
-    print "========================================"
-    print ""
+    echo ""
+    echo "========================================"
+    echo "  RustDesk Installation Script (macOS)"
+    echo "========================================"
+    echo ""
+    
+    # Check for root privileges first
+    if [[ $EUID -ne 0 ]]; then
+        log_warning "This script requires sudo privileges"
+        log_info "Please run with sudo:"
+        echo ""
+        echo "  sudo zsh $0 $@"
+        echo ""
+        exit 1
+    fi
     
     # Parse command line arguments
     parse_arguments "$@"
-    
-    # Check for root privileges
-    check_root "$@"
     
     # Validate configuration string
     if [[ -z "$CONFIG_STRING" ]] || [[ "$CONFIG_STRING" == "PASTE_YOUR_CONFIG_STRING_HERE" ]]; then
         log_error "Configuration string not set!"
         log_error "Please pass --config parameter or edit the script"
-        print ""
+        echo ""
         show_help
         exit 1
     fi
@@ -456,14 +444,14 @@ main() {
             local rustdesk_id
             rustdesk_id=$(configure_rustdesk "$CONFIG_STRING" "$RUSTDESK_PASSWORD")
             
-            print ""
-            print "========================================"
-            print "  Configuration Updated"
-            print "========================================"
-            print "RustDesk ID: $rustdesk_id"
-            print "Password: $RUSTDESK_PASSWORD"
-            print "========================================"
-            print ""
+            echo ""
+            echo "========================================"
+            echo "  Configuration Updated"
+            echo "========================================"
+            echo "RustDesk ID: $rustdesk_id"
+            echo "Password: $RUSTDESK_PASSWORD"
+            echo "========================================"
+            echo ""
             
             exit 0
         else
@@ -526,20 +514,20 @@ main() {
     rm -rf "$TEMP_DIR"
     
     # Display results
-    print ""
-    print "========================================"
-    print "  Installation Completed Successfully"
-    print "========================================"
-    print "RustDesk ID: $rustdesk_id"
-    print "Password: $RUSTDESK_PASSWORD"
-    print "Version: $latest_version"
-    print "========================================"
-    print ""
+    echo ""
+    echo "========================================"
+    echo "  Installation Completed Successfully"
+    echo "========================================"
+    echo "RustDesk ID: $rustdesk_id"
+    echo "Password: $RUSTDESK_PASSWORD"
+    echo "Version: $latest_version"
+    echo "========================================"
+    echo ""
     log_warning "Save these credentials in a secure location!"
-    print ""
+    echo ""
     log_info "RustDesk has been installed and configured"
     log_info "The service will start automatically on login"
-    print ""
+    echo ""
 }
 
 # Run main function
