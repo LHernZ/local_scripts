@@ -11,7 +11,7 @@
 #   zsh <(curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh)
 #
 # With custom config:
-#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh | zsh -s -- --config "your-config-string"
+#   curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/rustdesk-installer/main/install-rustdesk-mac.sh | sudo zsh -s -- --config "your-config-string"
 #
 # Author: Luis
 # Requires: macOS 10.13+ and sudo privileges
@@ -50,6 +50,10 @@ log_warning() {
 
 log_error() {
     echo -e "\033[0;31m[ERROR]\033[0m $1"
+}
+
+log_debug() {
+    echo -e "\033[0;35m[DEBUG]\033[0m $1"
 }
 
 # ============================================================================
@@ -177,22 +181,38 @@ mount_dmg() {
     local dmg_path="$1"
     log_info "Mounting DMG file..."
     
+    # First, try mounting with verbose output to debug
     local mount_output
-    mount_output=$(hdiutil attach "$dmg_path" -nobrowse -quiet 2>&1)
+    mount_output=$(hdiutil attach "$dmg_path" -nobrowse 2>&1)
     
-    local mount_point
-    mount_point=$(echo "$mount_output" | grep "/Volumes" | tail -1 | awk '{print $3}')
+    log_debug "Mount output: $mount_output"
     
+    # Try multiple methods to extract mount point
+    local mount_point=""
+    
+    # Method 1: Look for /Volumes/ in output
+    mount_point=$(echo "$mount_output" | grep "/Volumes/" | tail -1 | sed -E 's|.*/Volumes/|/Volumes/|' | awk '{print $NF}')
+    
+    # Method 2: Try a different pattern
     if [[ -z "$mount_point" ]]; then
-        # Try alternative method
-        mount_point=$(hdiutil attach "$dmg_path" -nobrowse 2>/dev/null | grep "/Volumes" | tail -1 | sed 's/.*\(\/Volumes\/.*\)/\1/')
+        mount_point=$(echo "$mount_output" | grep -o '/Volumes/[^[:space:]]*' | tail -1)
+    fi
+    
+    # Method 3: List all volumes and find the newest one
+    if [[ -z "$mount_point" ]]; then
+        log_debug "Trying to find mount point by listing volumes..."
+        sleep 1
+        # Get the most recently modified volume
+        mount_point=$(ls -td /Volumes/*/ 2>/dev/null | head -1 | sed 's|/$||')
     fi
     
     if [[ -n "$mount_point" ]]; then
+        log_debug "Found mount point: $mount_point"
         echo "$mount_point"
         return 0
     fi
     
+    log_error "Could not determine mount point"
     return 1
 }
 
@@ -201,7 +221,40 @@ unmount_dmg() {
     if [[ -n "$mount_point" ]] && [[ -d "$mount_point" ]]; then
         log_info "Unmounting DMG..."
         hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+        sleep 1
     fi
+}
+
+find_app_in_mount() {
+    local mount_point="$1"
+    
+    log_debug "Searching for RustDesk.app in: $mount_point"
+    log_debug "Contents of mount point:"
+    ls -la "$mount_point" 2>/dev/null | while read line; do
+        log_debug "  $line"
+    done
+    
+    # Try different possible locations
+    local app_path=""
+    
+    # Direct in mount point
+    if [[ -d "$mount_point/RustDesk.app" ]]; then
+        app_path="$mount_point/RustDesk.app"
+    # Inside a subdirectory
+    elif [[ -d "$mount_point"/*.app ]]; then
+        app_path=$(ls -d "$mount_point"/*.app 2>/dev/null | head -1)
+    # Search recursively (up to 2 levels)
+    else
+        app_path=$(find "$mount_point" -maxdepth 2 -name "*.app" -type d 2>/dev/null | grep -i rustdesk | head -1)
+    fi
+    
+    if [[ -n "$app_path" ]]; then
+        log_debug "Found app at: $app_path"
+        echo "$app_path"
+        return 0
+    fi
+    
+    return 1
 }
 
 install_rustdesk_from_dmg() {
@@ -215,19 +268,34 @@ install_rustdesk_from_dmg() {
         return 1
     fi
     
+    log_info "DMG mounted at: $mount_point"
+    
+    # Find the app
+    local app_path
+    app_path=$(find_app_in_mount "$mount_point")
+    
+    if [[ -z "$app_path" ]]; then
+        log_error "RustDesk.app not found in DMG"
+        log_error "Mount point contents:"
+        ls -la "$mount_point" 2>/dev/null || log_error "Could not list mount point"
+        unmount_dmg "$mount_point"
+        return 1
+    fi
+    
+    log_info "Found RustDesk.app at: $app_path"
     log_info "Copying RustDesk.app to Applications..."
     
     # Remove existing installation
     if [[ -d "/Applications/RustDesk.app" ]]; then
+        log_info "Removing existing RustDesk installation..."
         rm -rf "/Applications/RustDesk.app"
     fi
     
     # Copy the app
-    if [[ -d "$mount_point/RustDesk.app" ]]; then
-        cp -R "$mount_point/RustDesk.app" /Applications/
+    if cp -R "$app_path" /Applications/; then
         log_success "RustDesk copied to Applications"
     else
-        log_error "RustDesk.app not found in DMG"
+        log_error "Failed to copy RustDesk.app"
         unmount_dmg "$mount_point"
         return 1
     fi
@@ -235,8 +303,15 @@ install_rustdesk_from_dmg() {
     unmount_dmg "$mount_point"
     
     # Fix permissions and remove quarantine
+    log_info "Fixing permissions and removing quarantine attributes..."
     chmod -R 755 /Applications/RustDesk.app
     xattr -cr /Applications/RustDesk.app 2>/dev/null || true
+    
+    # Verify the binary exists
+    if [[ ! -f "/Applications/RustDesk.app/Contents/MacOS/RustDesk" ]]; then
+        log_error "RustDesk binary not found after installation"
+        return 1
+    fi
     
     log_success "Permissions and quarantine attributes fixed"
     
@@ -328,6 +403,10 @@ parse_arguments() {
                 CUSTOM_PASSWORD="$2"
                 shift 2
                 ;;
+            --debug)
+                set -x
+                shift
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -351,6 +430,7 @@ Usage:
 Options:
     --config CONFIG_STRING    Your RustDesk server configuration string
     --password PASSWORD       Custom password (optional, random if not provided)
+    --debug                   Enable debug output
     --help, -h               Show this help message
 
 Examples:
@@ -361,10 +441,10 @@ Examples:
     sudo zsh install-rustdesk-mac.sh --config "config=server.com:21116,base64string" --password "MyPassword123"
     
     # Run directly from GitHub
-    zsh <(curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh)
-    
-    # Run from GitHub with parameters
     curl -fsSL https://raw.githubusercontent.com/USER/REPO/main/install-rustdesk-mac.sh | sudo zsh -s -- --config "your-config"
+    
+    # Debug mode
+    sudo zsh install-rustdesk-mac.sh --config "your-config" --debug
 
 EOF
 }
@@ -476,6 +556,7 @@ main() {
     fi
     
     log_success "Download completed"
+    log_debug "DMG file size: $(du -h "$dmg_file" | awk '{print $1}')"
     
     # Stop any running processes
     stop_rustdesk_processes
